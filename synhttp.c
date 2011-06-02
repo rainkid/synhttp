@@ -54,22 +54,7 @@ struct QUEUE_ITEM{
 /*消息队列头*/
 TAILQ_HEAD(,QUEUE_ITEM) queue_head;
 
-
-/*实时监听消息队列，并发送处理请求*/
-static void syn_dispatch(){
-	pthread_detach(pthread_self());
-
-	while(1){
-		struct QUEUE_ITEM *temp_item;
-		temp_item=TAILQ_FIRST(&queue_head);
-		while(temp_item != NULL){
-			printf("%s\n",temp_item->name);
-			TAILQ_REMOVE(&queue_head, temp_item, entries);
-			temp_item = TAILQ_NEXT(temp_item, entries);
-		}
-	}
-}
-
+/*url解析函数*/
 char *urldecode(char *input_str)
 {
 		int len = strlen(input_str);
@@ -109,6 +94,21 @@ char *urldecode(char *input_str)
         }
         *dest = '\0';
         return str;
+}
+
+/*实时监听消息队列，并发送处理请求*/
+static void syn_dispatch(){
+	pthread_detach(pthread_self());
+
+	while(1){
+		struct QUEUE_ITEM *temp_item;
+		temp_item=TAILQ_FIRST(&queue_head);
+		while(temp_item != NULL){
+			printf("%s\n",temp_item->name);
+			TAILQ_REMOVE(&queue_head, temp_item, entries);
+			temp_item = TAILQ_NEXT(temp_item, entries);
+		}
+	}
 }
 
 /* 定时同步线程，定时将内存中的内容写入磁盘 */
@@ -180,56 +180,61 @@ void synhttp_handler(struct evhttp_request *req, void *arg)
 			is_auth_pass = true;
 		}
 
-		if (is_auth_pass == false) {
+		if (is_auth_pass == false)
+		{
 			/* 校验失败 */
 			evbuffer_add_printf(buf, "%s", "HTTPSQS_AUTH_FAILED");
+			goto done;
 		}
-		else
-		{
-			/*参数是否存在判断 */
-			if (synhttp_input_name != NULL && synhttp_input_opt != NULL && strlen(synhttp_input_name) <= 256) {
-				/* 入队列 */
-				if (strcmp(synhttp_input_opt, "set") == 0) {
-					/* 优先接收POST正文信息 */
-					int buffer_data_len;
-					if (synhttp_input_data != NULL){
-						buffer_data_len = strlen(synhttp_input_data);
-					}else{
-						buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
-					}
-					int queue_set_value = synhttp_now_setpos((char *)synhttp_input_name);
 
-					if (queue_set_value > 0) {
-						char queue_name[300] = {0}; /* 队列名称的总长度，用户输入的队列长度少于256字节 */
-						sprintf(queue_name, "%s:%d", synhttp_input_name, queue_set_value);
-
-						/*索引消息处理*/
-						struct QUEUE_ITEM *item;
-						item=malloc(sizeof(item));
-						item->name=queue_name;
-						TAILQ_INSERT_TAIL(&queue_head, item, entries);
-
-						/**/
-						char *synhttp_input_postbuffer;
-						char *buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
-
-						memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
-						synhttp_input_postbuffer = urldecode(buffer_data);
-						tcbdbput2(synhttp_db_tcbdb, queue_name, synhttp_input_postbuffer);
-						evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_OK");
-						free(synhttp_input_postbuffer);
-						free(buffer_data);
-					} else {
-						evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_END");
-					}
-				} else {
-					evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_ERROR");
-				}
-			} else {
-				/* 命令错误 */
-				evbuffer_add_printf(buf, "%s", "HTTPSQS_ERROR");
+		/*参数是否存在判断 */
+		if (synhttp_input_name != NULL && synhttp_input_opt != NULL && strlen(synhttp_input_name) <= 256) {
+			/* 入队列 */
+			if (strcmp(synhttp_input_opt, "set") != 0)
+			{
+				evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_ERROR");
+				goto done;
 			}
+
+			/* 优先接收POST正文信息 */
+			int buffer_data_len;
+			if (synhttp_input_data != NULL){
+				buffer_data_len = strlen(synhttp_input_data);
+			}else{
+				buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
+			}
+			int queue_set_value = synhttp_now_setpos((char *)synhttp_input_name);
+
+			if (queue_set_value > 0)
+			{
+				evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_END");
+				goto done;
+			}
+			char queue_name[300] = {0}; /* 队列名称的总长度，用户输入的队列长度少于256字节 */
+			sprintf(queue_name, "%s:%d", synhttp_input_name, queue_set_value);
+
+			/*索引消息处理*/
+			struct QUEUE_ITEM *item;
+			item=malloc(sizeof(item));
+			item->name=queue_name;
+			TAILQ_INSERT_TAIL(&queue_head, item, entries);
+
+			/**/
+			char *synhttp_input_postbuffer;
+			char *buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
+
+			memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
+			synhttp_input_postbuffer = urldecode(buffer_data);
+			tcbdbput2(synhttp_db_tcbdb, queue_name, synhttp_input_postbuffer);
+			evbuffer_add_printf(buf, "%s", "HTTPSQS_PUT_OK");
+			free(synhttp_input_postbuffer);
+			free(buffer_data);
+
+		} else {
+			/* 命令错误 */
+			evbuffer_add_printf(buf, "%s", "HTTPSQS_ERROR");
 		}
+done:
 		/* 输出内容给客户端 */
         evhttp_send_reply(req, HTTP_OK, "OK", buf);
 		/* 内存释放 */
