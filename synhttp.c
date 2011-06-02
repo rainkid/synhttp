@@ -234,7 +234,7 @@ void synhttp_handler(struct evhttp_request *req, void *arg)
 			/* 命令错误 */
 			evbuffer_add_printf(buf, "%s", "HTTPSQS_ERROR");
 		}
-done:
+	done:
 		/* 输出内容给客户端 */
         evhttp_send_reply(req, HTTP_OK, "OK", buf);
 		/* 内存释放 */
