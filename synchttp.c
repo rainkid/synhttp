@@ -106,8 +106,23 @@ static int synchttp_remove(const char *synchttp_input_name){
 	return 0;
 }
 
-static int synchttp_dopatch(){
+static int synchttp_dispense(const char * synhttp_input_name){
+	char queue_name[300] = {0};
 
+	int queue_value = 0;
+	char *queue_value_tmp;
+
+	sprintf(queue_name, "%s", synhttp_input_name);
+
+	queue_value_tmp = tcbdbget2(synchttp_db_tcbdb, queue_name);
+	if(queue_value_tmp != NULL){
+		printf("%s => %s\n",queue_name, queue_value_tmp);
+	}else{
+		return 1;
+	}
+
+	free(queue_value_tmp);
+	return 0;
 }
 
 /*实时监听消息队列，并发送处理请求*/
@@ -123,11 +138,15 @@ static void synchttp_dispatch(){
 			memset(queue_name, '\0', 300);
 			sprintf(queue_name, "%s", temp_item->name);
 
-			printf("%s\n", queue_name);
-			TAILQ_REMOVE(&queue_head, temp_item, entries);
-			synchttp_remove((char *)queue_name);
+			if(synchttp_dispense(queue_name) == 0){
+				/*分发成功后赶出消息队列*/
+				TAILQ_REMOVE(&queue_head, temp_item, entries);
+				synchttp_remove((char *)queue_name);
+			}else{
+				/*未分发成功保留在消息队列中*/
+
+			}
 			temp_item = TAILQ_NEXT(temp_item, entries);
-//			printf("%d\n", tcbdbvnum2(synchttp_db_tcbdb, "testqueue"));
 		}
 	}
 }
@@ -216,15 +235,15 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 
 					if (synchttp_input_data != NULL){
 						/*GET请求*/
-						memcpy (buffer_data, synchttp_input_data, buffer_data_len);
 						buffer_data_len = strlen(synchttp_input_data);
+						memcpy (buffer_data, synchttp_input_data, buffer_data_len);
 					}else{
 						/*POST请求*/
-						memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
 						buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
+						memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
 					}
-
 					synchttp_input_postbuffer = urldecode(buffer_data);
+
 					tcbdbput2(synchttp_db_tcbdb, queue_name, synchttp_input_postbuffer);
 					evbuffer_add_printf(buf, "%s", "SYNHTTP_SET_OK");
 					free(synchttp_input_postbuffer);
