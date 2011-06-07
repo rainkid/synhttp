@@ -1,1 +1,21 @@
-this is a open source project~
+
+HTTP Simple Sync Service - synchttp v 1.0 (April 14, 2011)
+
+Author: rainkid, zhuli ,  E-mail: rainkid@163.com
+This is free software, and you are welcome to modify and redistribute it under the New BSD License
+
+-l <ip_addr>  interface to listen on, default is 0.0.0.0
+-w <ip_addr>  interface to dispense out, default is 0.0.0.0
+-p <num>      TCP port number to listen on (default: 2688)
+-x <path>     database directory (example: /opt/synchttp/data)
+-t <second>   keep-alive timeout for an http request (default: 60)
+-s <second>   the interval to sync updated contents to the disk (default: 5)
+-c <num>      the maximum number of non-leaf nodes to be cached (default: 1024)
+-m <size>     database memory cache size in MB (default: 100)
+-i <file>     save PID in <file> (default: /tmp/synchttp.pid)
+-a <auth>     the auth password to access synchttp (example: mypasswd)
+-d            run as a daemon
+-h            print this help and exit
+
+Use command "killall synchttp", "pkill synchttp" and "kill `cat /tmp/synchttp.pid`" to stop synchttp.
+
