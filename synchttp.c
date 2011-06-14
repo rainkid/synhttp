@@ -144,26 +144,77 @@ static int synchttp_remove(const char *synchttp_input_name){
 	char queue_name[300] = {0x00};
 	sprintf(queue_name, "%s", synchttp_input_name);
 	tcbdbout2(synchttp_db_tcbdb, queue_name);
-	tcbdbsync(synchttp_db_tcbdb); /* 实时刷新到磁盘 */
+//	tcbdbsync(synchttp_db_tcbdb); /* 实时刷新到磁盘 */
 	return 0;
+}
+
+struct MemoryStruct {
+  char *memory;
+  size_t size;
+};
+
+static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *data){
+	size_t realsize = size * nmemb;
+	struct MemoryStruct *mem = (struct MemoryStruct *)data;
+ 
+	mem->memory = realloc(mem->memory, mem->size + realsize + 1);
+	if (mem->memory == NULL) {
+		/* out of memory! */ 
+		exit(EXIT_FAILURE);
+	}
+ 
+	memcpy(&(mem->memory[mem->size]), ptr, realsize);
+	mem->size += realsize;
+	mem->memory[mem->size] = 0;
+ 
+	return realsize;
 }
 
 /*消息分发*/
 static int synchttp_dispense(const char * synhttp_input_name){
 	char queue_name[300] = {0x00};
-
 	int queue_value = 0;
 	char *queue_value_tmp;
 
-	sprintf(queue_name, "%s", synhttp_input_name);
+	CURL *synchttp_curl_handle = NULL;
+	CURLcode response;
+
+	struct MemoryStruct chunk;
+struct curl_slist *headerlist=NULL;
+ 
+	chunk.memory = malloc(1);  /* will be grown as needed by the realloc above */ 
+	chunk.size = 0;
+
 	/*根据key获取队列数据*/
+	sprintf(queue_name, "%s", synhttp_input_name);
 	queue_value_tmp = tcbdbget2(synchttp_db_tcbdb, queue_name);
 	if(queue_value_tmp != NULL){
+		/*curl 选项设置*/
+		synchttp_curl_handle = curl_easy_init();
+		if(synchttp_curl_handle != NULL) {
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_value_tmp);
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
+		curl_easy_setopt(synchttp_curl_handle, CURLOPT_HEADER, 0L);
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_HTTPHEADER, headerlist);
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEDATA, &chunk);
+		       response = curl_easy_perform(synchttp_curl_handle);
+		       if(response != CURLE_OK){
+                            fprintf(stderr, "Curl request error\n");			
+		       }
+			printf("%lu bytes retrieved\n", (long)chunk.size);
+			printf("the string is : %s\n", (char *)chunk.memory);
+ 
+		if(chunk.memory){
+			free(chunk.memory);
+		}
+		}
+		curl_easy_cleanup(synchttp_curl_handle);
 		printf("%s => %s\n",queue_name, queue_value_tmp);
 	}else{
 		return 1;
 	}
-
+//	free(synchttp_curl_retval);
 	free(queue_value_tmp);
 	return 0;
 }
@@ -176,19 +227,17 @@ static void synchttp_dispatch(){
 	while(1){
 		/*从消息队列头部开始取数据*/
 		struct QUEUE_ITEM *temp_item;
-		temp_item=TAILQ_FIRST(&queue_head);
+		temp_item = TAILQ_FIRST(&queue_head);
 
 		while(temp_item != NULL){
 			memset(queue_name, '\0', 300);
 			sprintf(queue_name, "%s", temp_item->queue_name);
-
 			if(synchttp_dispense(queue_name) == 0){
 				/*分发成功后赶出消息队列*/
 				TAILQ_REMOVE(&queue_head, temp_item, entries);
 				synchttp_remove((char *)queue_name);
 			}else{
 				/*未分发成功保留在消息队列中*/
-
 			}
 			temp_item = TAILQ_NEXT(temp_item, entries);
 		}
@@ -197,18 +246,21 @@ static void synchttp_dispatch(){
 
 /* 子进程信号处理 */
 static void kill_signal_worker(const int sig) {
-	/* 同步内存数据到磁盘，并关闭数据库 */
-	tcbdbsync(synchttp_db_tcbdb);
-	tcbdbclose(synchttp_db_tcbdb);
-	tcbdbdel(synchttp_db_tcbdb);
+    /* 同步内存数据到磁盘，并关闭数据库 */
+    tcbdbsync(synchttp_db_tcbdb);
+    tcbdbclose(synchttp_db_tcbdb);
+    tcbdbdel(synchttp_db_tcbdb);
+
+    /*curl全局清空*/
+    curl_global_cleanup();
 
     exit(0);
 }
 
 /* 父进程信号处理 */
 static void kill_signal_master(const int sig) {
-	/* 删除PID文件 */
-	remove(synchttp_settings_pidfile);
+    /* 删除PID文件 */
+    remove(synchttp_settings_pidfile);
 
     /* 给进程组发送SIGTERM信号，结束子进程 */
     kill(0, SIGTERM);
@@ -280,8 +332,7 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 			evbuffer_add_printf(buf, "%s", "SYNHTTP_AUTH_FAILED");
 		}else{
 			/*参数是否存在判断 */
-			if (synchttp_input_name != NULL && synchttp_input_opt != NULL && strlen(synchttp_input_name) <= 256) {
-				if (strcmp(synchttp_input_opt, "set") == 0){
+			if (synchttp_input_name != NULL && strlen(synchttp_input_name) <= 256) {
 					int buffer_data_len;
 					char queue_name[300] = {0x00}; /* 队列名称的总长度，用户输入的队列长度少于256字节 */
 					char quene_name_temp[300] = {0x00};
@@ -290,21 +341,23 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 
 					/*索引消息处理*/
 					struct QUEUE_ITEM *item;
-					item=malloc(sizeof(item));
+					item= tccalloc(1, sizeof(item));
 					item->queue_name = quene_name_temp;
 					TAILQ_INSERT_TAIL(&queue_head, item, entries);
 
 					/*请求消息入库*/
 					char *synchttp_input_postbuffer;
-					char *buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
+					char *buffer_data;
 
 					if (synchttp_input_data != NULL){
 						/*GET请求*/
 						buffer_data_len = strlen(synchttp_input_data);
+						buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
 						memcpy (buffer_data, synchttp_input_data, buffer_data_len);
 					}else{
 						/*POST请求*/
 						buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
+						buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
 						memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
 					}
 					synchttp_input_postbuffer = urldecode(buffer_data);
@@ -313,9 +366,6 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 					evbuffer_add_printf(buf, "%s", "SYNHTTP_SET_OK");
 					free(synchttp_input_postbuffer);
 					free(buffer_data);
-				}else{
-					evbuffer_add_printf(buf, "%s", "SYNHTTP_SET_ERROR");
-				}
 			} else {
 				/* 参数错误 */
 				evbuffer_add_printf(buf, "%s", "SYNHTTP_ERROR");
@@ -431,6 +481,12 @@ int main(int argc, char *argv[], char *envp[])
 	if (synchttp_settings_datapath == NULL) {
 		show_help();
 		fprintf(stderr, "Attention: Please use the indispensable argument: -x <path>\n\n");
+		exit(1);
+	}
+ 
+  	/*curl初始化全局信息*/
+  	if ((curl_global_init(CURL_GLOBAL_ALL)) != CURLE_OK) {
+		fprintf(stderr, "Curl global init fail.\n");
 		exit(1);
 	}
 
