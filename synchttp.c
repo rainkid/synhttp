@@ -1,5 +1,5 @@
 /*
-HTTP Simple Sync Service - synhttp v1.0
+HTTP Simple Sync Service - synchttp v1.0
 Author: Rainkid, E-mail: rainkid@163.com
 This is free software, and you are welcome to modify and redistribute it under the New BSD License
 */
@@ -49,10 +49,15 @@ int synchttp_settings_syncinterval; /* 同步更新内容到磁盘的间隔时�
 char *synchttp_settings_pidfile; /* PID文件 */
 char *synchttp_settings_auth; /* 验证密码 */
 
+typedef struct SYNCHTTP_QUEUE{
+	 char *method;
+   	 char *queue_name;
+   	 char *queue_url;
+}SYNCHTTP_QUEUE;
 /*消息队列*/
 struct QUEUE_ITEM{
-     char *queue_name;
-     TAILQ_ENTRY(QUEUE_ITEM) entries;
+	SYNCHTTP_QUEUE * q;
+    TAILQ_ENTRY(QUEUE_ITEM) entries;
 };
 /*消息队列头*/
 TAILQ_HEAD(,QUEUE_ITEM) queue_head;
@@ -144,77 +149,93 @@ static int synchttp_remove(const char *synchttp_input_name){
 	char queue_name[300] = {0x00};
 	sprintf(queue_name, "%s", synchttp_input_name);
 	tcbdbout2(synchttp_db_tcbdb, queue_name);
-//	tcbdbsync(synchttp_db_tcbdb); /* 实时刷新到磁盘 */
 	return 0;
 }
 
-struct MemoryStruct {
-  char *memory;
+
+struct SynhttpResponseStruct {
+  char *responsetext;
   size_t size;
 };
 
-static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *data){
+static size_t synchttp_write_callback(void *ptr, size_t size, size_t nmemb, void *data){
 	size_t realsize = size * nmemb;
-	struct MemoryStruct *mem = (struct MemoryStruct *)data;
- 
-	mem->memory = realloc(mem->memory, mem->size + realsize + 1);
-	if (mem->memory == NULL) {
-		/* out of memory! */ 
+	struct SynhttpResponseStruct *mem = (struct SynhttpResponseStruct *)data;
+
+	mem->responsetext = realloc(mem->responsetext, mem->size + realsize + 1);
+	if (mem->responsetext == NULL) {
+		/* out of memory! */
 		exit(EXIT_FAILURE);
 	}
- 
-	memcpy(&(mem->memory[mem->size]), ptr, realsize);
+
+	memcpy(&(mem->responsetext[mem->size]), ptr, realsize);
 	mem->size += realsize;
-	mem->memory[mem->size] = 0;
- 
+	mem->responsetext[mem->size] = 0;
+
 	return realsize;
 }
 
 /*消息分发*/
-static int synchttp_dispense(const char * synhttp_input_name){
+static int synchttp_dispense(SYNCHTTP_QUEUE *queue){
 	char queue_name[300] = {0x00};
+	char queue_url[300] = {0x00};
 	int queue_value = 0;
 	char *queue_value_tmp;
 
 	CURL *synchttp_curl_handle = NULL;
 	CURLcode response;
 
-	struct MemoryStruct chunk;
-struct curl_slist *headerlist=NULL;
- 
-	chunk.memory = malloc(1);  /* will be grown as needed by the realloc above */ 
+	int retval = 1;
+
+	struct SynhttpResponseStruct chunk;
+
+	chunk.responsetext = malloc(1);  /* will be grown as needed by the realloc above */
 	chunk.size = 0;
 
 	/*根据key获取队列数据*/
-	sprintf(queue_name, "%s", synhttp_input_name);
+	sprintf(queue_name, "%s", queue->queue_name);
+	sprintf(queue_url, "%s?", queue->queue_url);
+
 	queue_value_tmp = tcbdbget2(synchttp_db_tcbdb, queue_name);
 	if(queue_value_tmp != NULL){
 		/*curl 选项设置*/
 		synchttp_curl_handle = curl_easy_init();
 		if(synchttp_curl_handle != NULL) {
-		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_value_tmp);
-		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
-		curl_easy_setopt(synchttp_curl_handle, CURLOPT_HEADER, 0L);
-		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_HTTPHEADER, headerlist);
+
+				if(strcmp(queue->method, "get") == 0){
+					strcat(queue_url, queue_value_tmp);
+					printf("get : %s\n", queue_url);
+				}
+
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_url);
+		       if(strcmp(queue->method, "post") == 0){
+		    	     printf("post : %s\n", queue_url);
+			         curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
+					 curl_easy_setopt(synchttp_curl_handle, CURLOPT_POSTFIELDS, queue_value_tmp);
+		       }
+
+		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, synchttp_write_callback);
 		       curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEDATA, &chunk);
 		       response = curl_easy_perform(synchttp_curl_handle);
-		       if(response != CURLE_OK){
-                            fprintf(stderr, "Curl request error\n");			
-		       }
-			printf("%lu bytes retrieved\n", (long)chunk.size);
-			printf("the string is : %s\n", (char *)chunk.memory);
- 
-		if(chunk.memory){
-			free(chunk.memory);
 		}
+		if((response == CURLE_OK) && chunk.responsetext && (strcmp(chunk.responsetext, "SYNCHTTP_SYNC_SUCCESS") == 0) ){
+			fprintf(stderr, "Response is success\n");
+			retval = 0;
+		}else{
+			fprintf(stderr, "Response is fail\n");
+			retval = 1;
+		}
+
+		fprintf(stderr, "responsetext is %s \n", chunk.responsetext);
+
+		if(chunk.responsetext){
+			free(chunk.responsetext);
 		}
 		curl_easy_cleanup(synchttp_curl_handle);
 		printf("%s => %s\n",queue_name, queue_value_tmp);
 	}else{
 		return 1;
 	}
-//	free(synchttp_curl_retval);
 	free(queue_value_tmp);
 	return 0;
 }
@@ -222,20 +243,20 @@ struct curl_slist *headerlist=NULL;
 /*实时监听消息队列，并发送处理请求*/
 static void synchttp_dispatch(){
 	pthread_detach(pthread_self());
-
-	char queue_name[300] = {0x00};
+	struct QUEUE_ITEM *temp_item;
 	while(1){
 		/*从消息队列头部开始取数据*/
-		struct QUEUE_ITEM *temp_item;
 		temp_item = TAILQ_FIRST(&queue_head);
 
+		struct SYNCHTTP_QUEUE *queue;
+
 		while(temp_item != NULL){
-			memset(queue_name, '\0', 300);
-			sprintf(queue_name, "%s", temp_item->queue_name);
-			if(synchttp_dispense(queue_name) == 0){
+			queue = tccalloc(1, sizeof(queue));
+			queue = temp_item->q;
+			if(synchttp_dispense(queue) == 0){
 				/*分发成功后赶出消息队列*/
 				TAILQ_REMOVE(&queue_head, temp_item, entries);
-				synchttp_remove((char *)queue_name);
+				synchttp_remove((char *)temp_item->q->queue_name);
 			}else{
 				/*未分发成功保留在消息队列中*/
 			}
@@ -297,8 +318,8 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 
 		/* 接收GET表单参数 */
 		const char *synchttp_input_name= evhttp_find_header (&synchttp_http_query, "name"); /*名称*/
-		const char *synchttp_input_charset = evhttp_find_header (&synchttp_http_query, "charset"); /* 操作类别 */
-		const char *synchttp_input_opt = evhttp_find_header (&synchttp_http_query, "opt"); /* 操作类别 */
+		const char *synchttp_input_charset = evhttp_find_header (&synchttp_http_query, "charset"); /* 编码方式 */
+		const char *synchttp_input_url = evhttp_find_header (&synchttp_http_query, "url"); /* 数据 */
 		const char *synchttp_input_data = evhttp_find_header (&synchttp_http_query, "data"); /* 数据 */
 		const char *synchttp_input_auth = evhttp_find_header (&synchttp_http_query, "auth"); /* 验证密码 */
 
@@ -336,14 +357,18 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 					int buffer_data_len;
 					char queue_name[300] = {0x00}; /* 队列名称的总长度，用户输入的队列长度少于256字节 */
 					char quene_name_temp[300] = {0x00};
+					char quene_url_temp[300] = {0x00};
+
 					sprintf(queue_name, "%s:%ld", synchttp_input_name, now);
+
 					sprintf(quene_name_temp, "%s:%ld", synchttp_input_name, now);
+					sprintf(quene_url_temp, "%s", synchttp_input_url);
 
 					/*索引消息处理*/
-					struct QUEUE_ITEM *item;
-					item= tccalloc(1, sizeof(item));
-					item->queue_name = quene_name_temp;
-					TAILQ_INSERT_TAIL(&queue_head, item, entries);
+					struct SYNCHTTP_QUEUE * queue;
+					queue = tccalloc(1, sizeof(queue));
+					queue->queue_name = quene_name_temp;
+					queue->queue_url = quene_url_temp;
 
 					/*请求消息入库*/
 					char *synchttp_input_postbuffer;
@@ -351,16 +376,24 @@ void synchttp_handler(struct evhttp_request *req, void *arg)
 
 					if (synchttp_input_data != NULL){
 						/*GET请求*/
+						queue->method = "get";
 						buffer_data_len = strlen(synchttp_input_data);
 						buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
 						memcpy (buffer_data, synchttp_input_data, buffer_data_len);
 					}else{
 						/*POST请求*/
+						queue->method = "post";
 						buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
 						buffer_data = (char *)tccalloc(1, buffer_data_len + 1);
 						memcpy (buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
 					}
 					synchttp_input_postbuffer = urldecode(buffer_data);
+
+					struct QUEUE_ITEM *item;
+					item= tccalloc(1, sizeof(item));
+					item->q = queue;
+
+					TAILQ_INSERT_TAIL(&queue_head, item, entries);
 
 					tcbdbput2(synchttp_db_tcbdb, queue_name, synchttp_input_postbuffer);
 					evbuffer_add_printf(buf, "%s", "SYNHTTP_SET_OK");
@@ -401,7 +434,7 @@ static void show_help(void)
 		   "Use command \"killall synchttp\", \"pkill synchttp\" and \"kill `cat /tmp/synchttp.pid`\" to stop synchttp.\n"
 		   "Please note that don't use the command \"pkill -9 synchttp\" and \"kill -9 PID of synchttp\"!\n"
 		   "\n"
-		   "Please visit \"https://github.com/rainkid/synhttp/\" for more help information.\n\n"
+		   "Please visit \"https://github.com/rainkid/synchttp/\" for more help information.\n\n"
 		   "--------------------------------------------------------------------------------------------------\n"
 		   "\n";
 	fprintf(stderr, b, strlen(b));
@@ -420,7 +453,7 @@ int main(int argc, char *argv[], char *envp[])
 	int synchttp_settings_cachenonleaf = 1024; /* 缓存非叶子节点数。单位：条 */
 	int synchttp_settings_cacheleaf = 2048; /* 缓存叶子节点数。叶子节点缓存数为非叶子节点数的两倍。单位：条 */
 	int synchttp_settings_mappedmemory = 104857600; /* 单位：字节 */
-	synchttp_settings_pidfile = "/tmp/synhttp.pid";
+	synchttp_settings_pidfile = "/tmp/synchttp.pid";
 	synchttp_settings_auth = NULL; /* 验证密码 */
 
   /* 启动选项 */
@@ -493,7 +526,7 @@ int main(int argc, char *argv[], char *envp[])
 	/* 数据表路径 */
 	int synchttp_settings_dataname_len = 1024;
 	char *synchttp_settings_dataname = (char *)tccalloc(1, synchttp_settings_dataname_len);
-	sprintf(synchttp_settings_dataname, "%s/synhttp.db", synchttp_settings_datapath);
+	sprintf(synchttp_settings_dataname, "%s/synchttp.db", synchttp_settings_datapath);
 
 	/* 打开数据表 */
 	synchttp_db_tcbdb = tcbdbnew();
