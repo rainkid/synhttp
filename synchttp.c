@@ -51,20 +51,12 @@ char *synchttp_settings_auth; /* 验证密码 */
 
 char *synchttp_sync_listen = "127.0.0.1";
 
-typedef struct SYNCHTTP_RESPONSE {
-	char *queue_name;
-	char *queue_url;
-	char *queue_method;
-} SYNCHTTP_RESPONSE;
-
 /*消息队列*/
 struct QUEUE_ITEM {
 	char *queue_name;
 	TAILQ_ENTRY(QUEUE_ITEM) entries;
 };
-/*消息队列头*/TAILQ_HEAD(,QUEUE_ITEM) queue_head;
-
-pthread_mutex_t mutex;
+TAILQ_HEAD(,QUEUE_ITEM) queue_head;
 
 /* 创建多层目录的函数 */
 void create_multilayer_dir(char *muldir) {
@@ -186,7 +178,7 @@ static int synchttp_dispense(const char *synchttp_queue_name) {
 	int queue_value = 0;
 
 	CURL *synchttp_curl_handle = NULL;
-	CURLcode response;	
+	CURLcode response;
 
 	struct SynhttpResponseStruct chunk;
 	chunk.responsetext = malloc(1);
@@ -204,28 +196,26 @@ static int synchttp_dispense(const char *synchttp_queue_name) {
 	queue_url_val = tcbdbget2(synchttp_db_tcbdb, queue_url);
 	queue_method_val = tcbdbget2(synchttp_db_tcbdb, queue_method);
 
-	//printf("%s:%s:%s\n\n", queue_name_val, queue_url_val, queue_method_val);
-
+//	fprintf(stderr, "%s:%s:%s:%s\n\n", synchttp_queue_name,queue_name_val, queue_url_val, queue_method_val);
 	if (queue_name_val != NULL) {
 		/*curl 选项设置*/
 		synchttp_curl_handle = curl_easy_init();
 		if (synchttp_curl_handle != NULL) {
 
 			sprintf(queue_url, "http://%s/%s", synchttp_sync_listen, queue_url_val);
-			if(strcmp(queue_method_val, "get") == 0){
-			 	strcat(queue_url, queue_name_val);
-				fprintf(stderr, "%s--->", queue_url);
-			 }
+			if (strcmp(queue_method_val, "get") == 0) {
+				strcat(queue_url, queue_name_val);
+				fprintf(stderr, "get:%s--->", queue_url);
+			}
 
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_url);
-			if(strcmp(queue_method_val, "post") == 0){
-				fprintf(stderr, "post : %s\n", queue_url_val);
+			if (strcmp(queue_method_val, "post") == 0) {
+				fprintf(stderr, "post:%s--->", queue_url_val);
 				curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
 				curl_easy_setopt(synchttp_curl_handle, CURLOPT_POSTFIELDS, queue_name_val);
 			}
 
-			curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION,
-					synchttp_write_callback);
+			curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, synchttp_write_callback);
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEDATA, &chunk);
 			response = curl_easy_perform(synchttp_curl_handle);
 		}
@@ -253,25 +243,27 @@ static int synchttp_dispense(const char *synchttp_queue_name) {
 /*实时监听消息队列，并发送处理请求*/
 static void synchttp_dispatch() {
 	pthread_detach(pthread_self());
-	char queue_name[300] = {0x00};
+	char queue_name[300] = { 0x00 };
 
 	while (1) {
-		/*从消息队列头部开始取数据*/
-		struct QUEUE_ITEM *item;
-		item = TAILQ_FIRST(&queue_head);
-		if (item != NULL) {
-			memset(queue_name,'\0', 300);
-			sprintf(queue_name, "%s", item->queue_name);
-			if (synchttp_dispense(queue_name) == 0) {
-				/*分发成功后赶出消息队列*/
-				TAILQ_REMOVE(&queue_head, item, entries);
-				synchttp_remove((char *) queue_name);
+		if(TAILQ_EMPTY(&queue_head) == false){
+			/*从消息队列头部开始取数据*/
+			struct QUEUE_ITEM *item;
+			if ((item = TAILQ_FIRST(&queue_head))!= NULL) {
+				sprintf(queue_name, "%s", item->queue_name);
+				if (synchttp_dispense(queue_name) == 0) {
+					/*分发成功后赶出消息队列*/
+					synchttp_remove((char *) queue_name);
+					TAILQ_REMOVE(&queue_head, item, entries);
+				} else {
+					/*未分发成功保留在消息队列中*/
+					sleep(1);
+				}
+				item = TAILQ_NEXT(item, entries);
 			} else {
-				/*未分发成功保留在消息队列中*/
 				sleep(1);
 			}
-			item = TAILQ_NEXT(item, entries);
-		} else {
+		}else{
 			sleep(1);
 		}
 	}
@@ -325,8 +317,9 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 	evhttp_parse_query(decode_uri, &synchttp_http_query);
 	free(decode_uri);
 
+	char *synchttp_input_name; /*名称*/
+
 	/* 接收GET表单参数 */
-	const char *synchttp_input_name= evhttp_find_header (&synchttp_http_query, "name"); /*名称*/
 	const char *synchttp_input_charset = evhttp_find_header(&synchttp_http_query, "charset"); /* 编码方式 */
 	const char *synchttp_input_url = evhttp_find_header(&synchttp_http_query, "url"); /* 数据 */
 	const char *synchttp_input_data = evhttp_find_header(&synchttp_http_query, "data"); /* 数据 */
@@ -362,32 +355,34 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 		evbuffer_add_printf(buf, "%s", "SYNHTTP_AUTH_FAILED");
 	} else {
 		/*参数是否存在判断 */
-		fprintf(stderr, "%s:%s\n", synchttp_input_name, synchttp_input_url);
 
-		if ((synchttp_input_name != NULL && strlen(synchttp_input_name) <= 250) && 
-		    (synchttp_input_url != NULL && 1< strlen(synchttp_input_url) <= 250)) {
+		if (synchttp_input_url != NULL && 1 < strlen(synchttp_input_url) <= 250) {
 			int buffer_data_len;
-			char queue_name[300] = {0x00}; /* 队列名称的总长度，用户输入的队列长度少于250字节 */
-			char queue_url[300] = {0x00};
-			char queue_method[300] = {0x00};
-			char queue_name_temp[300] = {0x00};
+			char queue_name[300] = { 0x00 }; /* 队列名称的总长度，用户输入的队列长度少于250字节 */
+			char queue_url[300] = { 0x00 };
+			char queue_method[300] = { 0x00 };
 
-			sprintf(queue_name_temp, "%s", synchttp_input_name);
-			sprintf(queue_name, "%s:NAME", queue_name_temp);
-			sprintf(queue_url, "%s:URL", queue_name_temp);
-			sprintf(queue_method, "%s:METHOD", queue_name_temp);
+			time_t timep;
+			time(&timep);
+			struct timeval tv;
+			gettimeofday(&tv, NULL);
+			synchttp_input_name = tccalloc(1, 300);
+			sprintf(synchttp_input_name, "%ld", mktime(gmtime(&timep)) + tv.tv_usec);
+
+			sprintf(queue_name, "%s:NAME", synchttp_input_name);
+			sprintf(queue_url, "%s:URL", synchttp_input_name);
+			sprintf(queue_method, "%s:METHOD", synchttp_input_name);
 
 			/*索引消息处理*/
 			struct QUEUE_ITEM *item;
 			item = tccalloc(1, sizeof(item));
-			item->queue_name = queue_name_temp;
+			item->queue_name = synchttp_input_name;
 			TAILQ_INSERT_TAIL(&queue_head, item, entries);
 
 			/*请求消息入库*/
 			char *synchttp_input_buffer;
 			char *buffer_data;
 			char *queue_url_temp;
-
 			if (synchttp_input_data != NULL) {
 				/*GET请求*/
 				tcbdbput2(synchttp_db_tcbdb, queue_method, "get");
@@ -399,20 +394,18 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 				tcbdbput2(synchttp_db_tcbdb, queue_method, "post");
 				buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
 				buffer_data = (char *) tccalloc(1, buffer_data_len + 1);
-				memcpy(buffer_data, EVBUFFER_DATA(req->input_buffer),
-						buffer_data_len);
+				memcpy(buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
 			}
 			synchttp_input_buffer = urldecode(buffer_data);
 
 			tcbdbput2(synchttp_db_tcbdb, queue_name, synchttp_input_buffer);
-			
-			queue_url_temp = (char *) tccalloc(1, strlen(synchttp_input_url) + 1);
+			queue_url_temp = (char *) tccalloc(1,strlen(synchttp_input_url) + 1);
 			memcpy(queue_url_temp, synchttp_input_url, strlen(synchttp_input_url));
-
 			tcbdbput2(synchttp_db_tcbdb, queue_url, queue_url_temp);
 
 			evbuffer_add_printf(buf, "%s", "SYNHTTP_SET_OK");
 			free(synchttp_input_buffer);
+			free(synchttp_input_name);
 			free(buffer_data);
 		} else {
 			/* 参数错误 */
@@ -427,31 +420,29 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 }
 
 static void show_help(void) {
-	char
-			*b =
-					"--------------------------------------------------------------------------------------------------\n"
-						"HTTP Simple Sync Service - synchttp v 1.0 (April 14, 2011)\n\n"
-						"Author: rainkid, zhuli ,  E-mail: rainkid@163.com\n"
-						"This is free software, and you are welcome to modify and redistribute it under the New BSD License\n"
-						"\n"
-						"-l <ip_addr>  interface to listen on, default is 0.0.0.0\n"
-						"-w <ip_addr>  interface to dispense out, default is 0.0.0.0\n"
-						"-p <num>      TCP port number to listen on (default: 2688)\n"
-						"-x <path>     database directory (example: /opt/synchttp/data)\n"
-						"-t <second>   keep-alive timeout for an http request (default: 60)\n"
-						"-s <second>   the interval to sync updated contents to the disk (default: 5)\n"
-						"-c <num>      the maximum number of non-leaf nodes to be cached (default: 1024)\n"
-						"-m <size>     database memory cache size in MB (default: 100)\n"
-						"-i <file>     save PID in <file> (default: /tmp/synchttp.pid)\n"
-						"-a <auth>     the auth password to access synchttp (example: mypasswd)\n"
-						"-d            run as a daemon\n"
-						"-h            print this help and exit\n\n"
-						"Use command \"killall synchttp\", \"pkill synchttp\" and \"kill `cat /tmp/synchttp.pid`\" to stop synchttp.\n"
-						"Please note that don't use the command \"pkill -9 synchttp\" and \"kill -9 PID of synchttp\"!\n"
-						"\n"
-						"Please visit \"https://github.com/rainkid/synchttp/\" for more help information.\n\n"
-						"--------------------------------------------------------------------------------------------------\n"
-						"\n";
+	char *b="--------------------------------------------------------------------------------------------------\n"
+			"HTTP Simple Sync Service - synchttp v 1.0 (April 14, 2011)\n\n"
+			"Author: rainkid, zhuli ,  E-mail: rainkid@163.com\n"
+			"This is free software, and you are welcome to modify and redistribute it under the New BSD License\n"
+			"\n"
+			"-l <ip_addr>  interface to listen on, default is 0.0.0.0\n"
+			"-w <ip_addr>  interface to dispense out, default is 0.0.0.0\n"
+			"-p <num>      TCP port number to listen on (default: 2688)\n"
+			"-x <path>     database directory (example: /opt/synchttp/data)\n"
+			"-t <second>   keep-alive timeout for an http request (default: 60)\n"
+			"-s <second>   the interval to sync updated contents to the disk (default: 5)\n"
+			"-c <num>      the maximum number of non-leaf nodes to be cached (default: 1024)\n"
+			"-m <size>     database memory cache size in MB (default: 100)\n"
+			"-i <file>     save PID in <file> (default: /tmp/synchttp.pid)\n"
+			"-a <auth>     the auth password to access synchttp (example: mypasswd)\n"
+			"-d            run as a daemon\n"
+			"-h            print this help and exit\n\n"
+			"Use command \"killall synchttp\", \"pkill synchttp\" and \"kill `cat /tmp/synchttp.pid`\" to stop synchttp.\n"
+			"Please note that don't use the command \"pkill -9 synchttp\" and \"kill -9 PID of synchttp\"!\n"
+			"\n"
+			"Please visit \"https://github.com/rainkid/synchttp/\" for more help information.\n\n"
+			"--------------------------------------------------------------------------------------------------\n"
+			"\n";
 	fprintf(stderr, b, strlen(b));
 }
 
@@ -488,10 +479,8 @@ int main(int argc, char *argv[], char *envp[]) {
 				} else { /* 如果不存在该目录，则创建 */
 					create_multilayer_dir(synchttp_settings_datapath);
 				}
-
 				if (access(synchttp_settings_datapath, W_OK) != 0) { /* 如果目录不可写 */
-					fprintf(stderr,
-							"synchttp database directory not writable\n");
+					fprintf(stderr, "synchttp database directory not writable\n");
 				}
 			}
 			break;
@@ -549,13 +538,11 @@ int main(int argc, char *argv[], char *envp[]) {
 	synchttp_db_tcbdb = tcbdbnew();
 	tcbdbsetmutex(synchttp_db_tcbdb); /* 开启线程互斥锁 */
 	tcbdbtune(synchttp_db_tcbdb, 1024, 2048, 50000000, 8, 10, BDBTLARGE);
-	tcbdbsetcache(synchttp_db_tcbdb, synchttp_settings_cacheleaf,
-			synchttp_settings_cachenonleaf);
+	tcbdbsetcache(synchttp_db_tcbdb, synchttp_settings_cacheleaf, synchttp_settings_cachenonleaf);
 	tcbdbsetxmsiz(synchttp_db_tcbdb, synchttp_settings_mappedmemory); /* 内存缓存大小 */
 
 	/* 判断表是否能打开 */
-	if (!tcbdbopen(synchttp_db_tcbdb, synchttp_settings_dataname,
-			BDBOWRITER | BDBOCREAT)) {
+	if (!tcbdbopen(synchttp_db_tcbdb, synchttp_settings_dataname, BDBOWRITER | BDBOCREAT)) {
 		fprintf(stderr, "Attention: Unable to open the database.\n\n");
 		exit(1);
 	}
@@ -638,25 +625,21 @@ int main(int argc, char *argv[], char *envp[]) {
 	/* 处理段错误信号 */
 	signal(SIGSEGV, kill_signal_worker);
 
-	/*创建消息队列监听进程*/TAILQ_INIT(&queue_head);
+	/*创建消息队列监听进程*/
+	TAILQ_INIT(&queue_head);
 	pthread_t synchttp_dispatch_tid;
-	pthread_create(&synchttp_dispatch_tid, NULL, (void *) synchttp_dispatch,
-			NULL);
+	pthread_create(&synchttp_dispatch_tid, NULL, (void *) synchttp_dispatch, NULL);
 
-	pthread_mutex_init(&mutex, NULL);
 	/* 创建定时同步线程，定时将内存中的内容写入磁盘 */
 	pthread_t synchttp_worker_tid;
 	pthread_create(&synchttp_worker_tid, NULL, (void *) synchttp_worker, NULL);
-
-	pthread_mutex_destroy(&mutex);
 
 	/* 外部请求处理部分 */
 	struct evhttp *synchttpd;
 	event_init();
 	synchttpd = evhttp_start(synchttp_settings_listen, synchttp_settings_port);
 	if (synchttpd == NULL) {
-		fprintf(stderr, "Error: Unable to listen on %s:%d\n\n",
-				synchttp_settings_listen, synchttp_settings_port);
+		fprintf(stderr, "Error: Unable to listen on %s:%d\n\n", synchttp_settings_listen, synchttp_settings_port);
 		kill(0, SIGTERM);
 		exit(1);
 	}
