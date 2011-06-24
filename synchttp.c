@@ -49,7 +49,7 @@ int synchttp_settings_syncinterval; /* 同步更新内容到磁盘的间隔时�
 char *synchttp_settings_pidfile; /* PID文件 */
 char *synchttp_settings_auth; /* 验证密码 */
 
-char *synchttp_sync_listen = "127.0.0.1";
+char *synchttp_sync_listen[] = {"127.0.0.1"};
 
 /*消息队列*/
 struct QUEUE_ITEM {
@@ -202,7 +202,7 @@ static int synchttp_dispense(const char *synchttp_queue_name) {
 		synchttp_curl_handle = curl_easy_init();
 		if (synchttp_curl_handle != NULL) {
 
-			sprintf(queue_url, "http://%s/%s", synchttp_sync_listen, queue_url_val);
+			sprintf(queue_url, "http://%s/%s", synchttp_sync_listen[0], queue_url_val);
 			if (strcmp(queue_method_val, "get") == 0) {
 				strcat(queue_url, queue_name_val);
 				fprintf(stderr, "get:%s--->", queue_url);
@@ -376,7 +376,8 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 			/*索引消息处理*/
 			struct QUEUE_ITEM *item;
 			item = tccalloc(1, sizeof(item));
-			item->queue_name = synchttp_input_name;
+			item->queue_name = tccalloc(1, 300);
+			memcpy(item->queue_name, synchttp_input_name, strlen(synchttp_input_name));
 			TAILQ_INSERT_TAIL(&queue_head, item, entries);
 
 			/*请求消息入库*/
