@@ -1,3 +1,51 @@
+##########################################################################
+通用性http消息写队列
+
+####安装 ：####
+tar zxvf libevent-2.0.10-stable.tar.gz
+cd libevent-2.0.10-stable
+./configure --prefix=/usr/local/libevent-2.0.10-stable
+make
+make install
+cd ..
+
+tar zxvf tokyocabinet-1.4.47.tar.gz
+cd tokyocabinet-1.4.47
+./configure --prefix=/usr/local/tokyocabinet-1.4.47
+make
+make install
+cd ..
+
+tar zxvf curl-7.21.7.tar.gz
+cd curl-7.21.7
+./configure --prefx=/usr/local/curl-7.21.7
+make
+make install
+cd ..
+
+编译并启动服务
+make
+./synchttp -x${dir}
+
+#### 参数说明：####
+
+-l <ip_addr> 服务器地址
+-w <ip_addr> 分发地址
+-p <num> 服务器端口
+-x <path> 缓存数据目录
+-t <second> 消息超时时间
+-s <second> 消息同步到硬盘的时间/s
+-c <num> 节点数量
+-m <size> 缓存数据空间大小
+-i <file> pid文件
+-a <auth> 验证密码
+-d 守护进程方式运行
+-h 帮助信息
+
+
+######################################################################################
+######################################################################################
+
 ### How to install? ###
 
 tar zxvf libevent-2.0.10-stable.tar.gz
@@ -47,3 +95,4 @@ This is free software, and you are welcome to modify and redistribute it under t
 
 Use command "killall synchttp", "pkill synchttp" and "kill `cat /tmp/synchttp.pid`" to stop synchttp.
 
+######################################################################################
