@@ -201,26 +201,27 @@ static int synchttp_dispense(const char *synchttp_queue_name) {
 		/*curl 选项设置*/
 		synchttp_curl_handle = curl_easy_init();
 		if (synchttp_curl_handle != NULL) {
-
+			/*请求地址*/
 			sprintf(queue_url, "http://%s/%s", synchttp_sync_listen[0], queue_url_val);
+			/*get请求*/
 			if (strcmp(queue_method_val, "get") == 0) {
 				strcat(queue_url, queue_name_val);
 				fprintf(stderr, "get:%s--->", queue_url);
 			}
-
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_url);
+			/*post请求*/
 			if (strcmp(queue_method_val, "post") == 0) {
 				fprintf(stderr, "post:%s--->", queue_url_val);
 				curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
 				curl_easy_setopt(synchttp_curl_handle, CURLOPT_POSTFIELDS, queue_name_val);
 			}
-
+			/*回调设置*/
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, synchttp_write_callback);
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEDATA, &chunk);
 			response = curl_easy_perform(synchttp_curl_handle);
 		}
-		if ((response == CURLE_OK) && chunk.responsetext && (strcmp(
-				chunk.responsetext, "SYNCHTTP_SYNC_SUCCESS") == 0)) {
+		/*请求响应处理*/
+		if ((response == CURLE_OK) && chunk.responsetext && (strcmp(chunk.responsetext, "SYNCHTTP_SYNC_SUCCESS") == 0)) {
 			fprintf(stderr, "success\n");
 			retval = 0;
 		} else {
@@ -340,8 +341,7 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 	/* 权限校验 */bool is_auth_pass = false; /* 是否验证通过 */
 	if (synchttp_settings_auth != NULL) {
 		/* 如果命令行启动参数设置了验证密码 */
-		if (synchttp_input_auth != NULL && strcmp(synchttp_settings_auth,
-				synchttp_input_auth) == 0) {
+		if (synchttp_input_auth != NULL && strcmp(synchttp_settings_auth, synchttp_input_auth) == 0) {
 			is_auth_pass = true;
 		} else {
 			is_auth_pass = false;
