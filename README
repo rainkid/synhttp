@@ -1,3 +1,31 @@
+### How to install? ###
+
+tar zxvf libevent-2.0.10-stable.tar.gz
+cd libevent-2.0.10-stable
+./configure --prefix=/usr/local/libevent-2.0.10-stable
+make
+make install
+cd ..
+
+tar zxvf tokyocabinet-1.4.47.tar.gz
+cd tokyocabinet-1.4.47
+./configure --prefix=/usr/local/tokyocabinet-1.4.47
+make
+make install
+cd ..
+
+tar zxvf curl-7.21.7.tar.gz
+cd curl-7.21.7
+./configure --prefx=/usr/local/curl-7.21.7
+make
+make install
+cd ..
+
+make
+./synchttp -x${dir}
+
+
+### How to use? ###
 
 HTTP Simple Sync Service - synchttp v 1.0 (April 14, 2011)
 

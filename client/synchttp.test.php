@@ -11,7 +11,7 @@ $data = array(
 $synchttp = new synchttp();
 
 echo "The get method ";
-$res = $synchttp->http_get($host, $port, $url, urlencode(http_build_query($data)));
+$res = $synchttp->http_get($host, $port, $url, $data);
 if($res == false){
 	echo "ERROR";
 	echo "<br/>";
@@ -21,7 +21,7 @@ if($res == false){
 }
 
 echo "The post method ";
-$res = $synchttp->http_post($host, $port, $url, urlencode(http_build_query($data)));
+$res = $synchttp->http_post($host, $port, $url, $data);
 if($res == false){
 	echo "ERROR";
 	echo "<br/>";

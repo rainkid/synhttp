@@ -8,6 +8,7 @@ class synchttp
         {
             return false;
         }
+	$data = urlencode(http_build_query($data));
         $out = "GET ${url}&data=${data} HTTP/1.1\r\n";
         $out .= "Host: ${host}\r\n";
         $out .= "Connection: close\r\n";
@@ -41,6 +42,7 @@ class synchttp
         {
             return false;
         }
+	$data = urlencode(http_build_query($data));
         $out = "POST ${url} HTTP/1.1\r\n";
         $out .= "Host: ${host}\r\n";
         $out .= "Content-Length: " . strlen($data) . "\r\n";
