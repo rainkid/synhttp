@@ -13,19 +13,15 @@ $synchttp = new synchttp();
 echo "The get method ";
 $res = $synchttp->http_get($host, $port, $url, $data);
 if($res == false){
-	echo "ERROR";
-	echo "<br/>";
+	echo "ERROR",PHP_EOL;
 }else{
-	echo $res;
-	echo "<br/>";
+	echo $res, PHP_EOL;
 }
 
 echo "The post method ";
 $res = $synchttp->http_post($host, $port, $url, $data);
 if($res == false){
-	echo "ERROR";
-	echo "<br/>";
+	echo "ERROR",PHP_EOL;
 }else{
-	echo $res;
-	echo "<br/>";
+	echo $res,PHP_EOL;
 }
