@@ -8,12 +8,12 @@
 #include <sys/time.h>
 #include <sys/queue.h>
 #include <sys/types.h>
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <getopt.h>
 #include <unistd.h>
+#include <ctype.h>
+#include <getopt.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -40,6 +40,8 @@
 #include <curl/curl.h>
 #include <curl/easy.h>
 
+#include "lib/tool.h"
+
 #define SYNCHTTP_DEFAULT_MAXQUEUE 1000000
 #define VERSION 1.0
 
@@ -49,101 +51,106 @@ int synchttp_settings_syncinterval; /* 同步更新内容到磁盘的间隔时�
 char *synchttp_settings_pidfile; /* PID文件 */
 char *synchttp_settings_auth; /* 验证密码 */
 
-char *synchttp_sync_listen;
-int sync_listen_num = 0;
+int num = 0;
 
-/*消息队列*/
-struct QUEUE_ITEM {
-	char *queue_name;
-	TAILQ_ENTRY(QUEUE_ITEM) entries;
-};
-TAILQ_HEAD(,QUEUE_ITEM) queue_head;
+//获取队列写入点
+static int synchttp_get_putpos(){
+	int putpos_value = 0;
+	char *putpos_value_tmp;
+	char queue_name[32] = {0};
 
-/* 创建多层目录的函数 */
-void create_multilayer_dir(char *muldir) {
-	int i, len;
-	char str[512];
+	sprintf(queue_name, "%s", "PP");
+	putpos_value_tmp = tcbdbget2(synchttp_db_tcbdb, queue_name);
+	if(putpos_value_tmp){
+		putpos_value = atoi(putpos_value_tmp);
+		free(putpos_value_tmp);
+	}
 
-	strncpy(str, muldir, 512);
-	len = strlen(str);
-	for (i = 0; i < len; i++) {
-		if (str[i] == '/') {
-			str[i] = '\0';
-			//判断此目录是否存在,不存在则创建
-			if (access(str, F_OK) != 0) {
-				mkdir(str, 0777);
-			}
-			str[i] = '/';
+	return putpos_value;
+}
+
+//获取队列读取点
+static int synchttp_get_readpos()
+{
+	int readpos_value = 0;
+	char *readpos_value_tmp;
+	char queue_name[32] = {0};
+
+	readpos_value_tmp = tcbdbget2(synchttp_db_tcbdb, "RP");
+	if(readpos_value_tmp){
+		readpos_value = atoi(readpos_value_tmp);
+		free(readpos_value_tmp);
+	}
+
+	return readpos_value;
+}
+
+//设置队列写入点
+static int synchttp_now_putpos()
+{
+	int readpos_value = 0;
+	int putpos_value = 0;
+	char queue_input[32] = {0};
+
+	readpos_value = synchttp_get_readpos();
+	putpos_value = synchttp_get_putpos();
+
+	putpos_value = putpos_value + 1;
+	if(putpos_value == readpos_value){
+		//消息队列已满
+		putpos_value = 0;
+	}else if(readpos_value <=0 && putpos_value > SYNCHTTP_DEFAULT_MAXQUEUE){
+		//如果队列没有出操作并且队列已满
+		putpos_value = 0;
+	}else if(putpos_value > SYNCHTTP_DEFAULT_MAXQUEUE){
+		if(tcbdbput2(synchttp_db_tcbdb, "PP", "1")) {
+			putpos_value = 1;
 		}
+	}else{
+		sprintf(queue_input,"%d", putpos_value);
+		tcbdbput2(synchttp_db_tcbdb, "PP", (char *)queue_input);
 	}
-	if (len > 0 && access(str, F_OK) != 0) {
-		mkdir(str, 0777);
-	}
-
-	return;
+	return putpos_value;
 }
 
-int count_array(char *arr[], int size) {
-	int n_num = 0, n_size = 0;
-	while (n_size != size) {
-		n_size += sizeof(arr[n_num]);
-		n_num++;
+
+static int synchttp_now_readpos()
+{
+	int putpos_value = 0;
+	int readpos_value = 0;
+	char queue_name[300] = {0}; /* 队列名称的总长度，用户输入的队列长度少于256字节 */
+
+	/* 读取当前队列写入位置点 */
+	putpos_value = synchttp_get_putpos();
+
+	/* 读取当前队列读取位置点 */
+	readpos_value = synchttp_get_readpos();
+
+	/* 如果readpos_value的值不存在，重置为1 */
+	if (readpos_value == 0 && putpos_value > 0) {
+		readpos_value = 1;
+		tcbdbput2(synchttp_db_tcbdb, "RP", "1");
+	/* 如果队列的读取值（出队列）小于队列的写入值（入队列） */
+	} else if (readpos_value < putpos_value) {
+		readpos_value = readpos_value + 1;
+		char queue_input[32] = {0};
+		sprintf(queue_input, "%d", readpos_value);
+		tcbdbput2(synchttp_db_tcbdb, "RP", queue_input);
+	/* 如果队列的读取值（出队列）大于队列的写入值（入队列），并且队列的读取值（出队列）小于最大队列数量 */
+	} else if (readpos_value > putpos_value && readpos_value < SYNCHTTP_DEFAULT_MAXQUEUE) {
+		readpos_value = readpos_value + 1;
+		char queue_input[32] = {0};
+		sprintf(queue_input, "%d", readpos_value);
+		tcbdbput2(synchttp_db_tcbdb, "RP", queue_input);
+	/* 如果队列的读取值（出队列）大于队列的写入值（入队列），并且队列的读取值（出队列）等于最大队列数量 */
+	} else if (readpos_value > putpos_value && readpos_value == SYNCHTTP_DEFAULT_MAXQUEUE) {
+		readpos_value = 1;
+		tcbdbput2(synchttp_db_tcbdb, "RP", "1");
+	/* 队列的读取值（出队列）等于队列的写入值（入队列），即队列中的数据已全部读出 */
+	} else {
+		readpos_value = 0;
 	}
-	return n_num;
-}
-
-/*url解析函数*/
-char *urldecode(char *input_str) {
-	int len = strlen(input_str);
-	char *str = strdup(input_str);
-
-	char *dest = str;
-	char *data = str;
-
-	int value;
-	int c;
-
-	while (len--) {
-		if (*data == '+') {
-			*dest = ' ';
-		} else if (*data == '%' && len >= 2 && isxdigit((int) *(data + 1))
-				&& isxdigit((int) *(data + 2))) {
-
-			c = ((unsigned char *) (data + 1))[0];
-			if (isupper(c))
-				c = tolower(c);
-			value = (c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10) * 16;
-			c = ((unsigned char *) (data + 1))[1];
-			if (isupper(c))
-				c = tolower(c);
-			value += c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10;
-
-			*dest = (char) value;
-			data += 2;
-			len -= 2;
-		} else {
-			*dest = *data;
-		}
-		data++;
-		dest++;
-	}
-	*dest = '\0';
-	return str;
-}
-
-/*消息清除*/
-static int synchttp_remove(const char *synchttp_queue_name) {
-	char queue_name[300] = { 0x00 };
-	char queue_url[300] = { 0x00 };
-	char queue_method[300] = { 0x00 };
-
-	sprintf(queue_name, "%s:NAME", synchttp_queue_name);
-	sprintf(queue_url, "%s:URL", synchttp_queue_name);
-	sprintf(queue_method, "%s:METHOD", synchttp_queue_name);
-	tcbdbout2(synchttp_db_tcbdb, queue_name);
-	tcbdbout2(synchttp_db_tcbdb, queue_url);
-	tcbdbout2(synchttp_db_tcbdb, queue_method);
-	return 0;
+	return readpos_value;
 }
 
 struct SynhttpResponseStruct {
@@ -165,52 +172,46 @@ static size_t synchttp_write_callback(void *ptr, size_t size, size_t nmemb, void
 	mem->responsetext[mem->size] = 0;
 	return realsize;
 }
-static int synchttp_request(const char *synchttp_host, char *synchttp_queue_url, char *synchttp_queue_method, char *synchttp_queue_data) {
+
+static int synchttp_request(char *synchttp_queue_data) {
 	CURL *synchttp_curl_handle = NULL;
 	CURLcode response;
 	int retval = 1;
-	char *host, *queue_url, *queue_method, *queue_data;
+	char *queue_url,*queue_data, *queue_method;
 
 	struct SynhttpResponseStruct chunk;
 	chunk.responsetext = malloc(1);
 	chunk.size = 0;
 
-	host = tccalloc(1, strlen(synchttp_host) + 1);
-	memcpy(host, synchttp_host, strlen(synchttp_host));
-	queue_url = tccalloc(1, strlen(synchttp_queue_url) + 1);
-	memcpy(queue_url, synchttp_queue_url, strlen(synchttp_queue_url));
-	queue_method = tccalloc(1, strlen(synchttp_queue_method) + 1);
-	memcpy(queue_method, synchttp_queue_method, strlen(synchttp_queue_method));
-	queue_data = tccalloc(1, strlen(synchttp_queue_data) + 1);
-	memcpy(queue_data, synchttp_queue_data, strlen(synchttp_queue_data));
+	int len = strlen(synchttp_queue_data);
+	queue_method = strdup(substr(synchttp_queue_data, len-2,len));
 
 	/*curl 选项设置*/
 	synchttp_curl_handle = curl_easy_init();
 	if (synchttp_curl_handle != NULL) {
-		/*请求地址*/
-		char http_queue_url[1024 * 3] = { 0x00 };
-		sync_listen_num++;
-		fprintf(stderr, "[ %d ]", sync_listen_num);
-		sprintf(http_queue_url, "http://%s/%s", host, queue_url);
+		num++;
 		/*get请求*/
-		if (strcmp(queue_method, "get") == 0) {
-			strcat(http_queue_url, queue_data);
-			fprintf(stderr, "get:%s        ", http_queue_url);
+		if (strcmp(queue_method, "#1") == 0) {
+			queue_url = tccalloc(1, strlen(synchttp_queue_data) + 1);
+			memcpy(queue_url, synchttp_queue_data, strlen(synchttp_queue_data)-2);
+			fprintf(stderr, "[ %d ]get:%s        ",num, queue_url);
 		}
-		curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, http_queue_url);
 		/*post请求*/
-		if (strcmp(queue_method, "post") == 0) {
-			fprintf(stderr, "post:%s        ", http_queue_url);
+		if (strcmp(queue_method, "#2") == 0) {
+			int query_url_len = strcspn(synchttp_queue_data,"?");
+			queue_url = strdup(substr(synchttp_queue_data, 0, query_url_len));
+			queue_data = strdup(substr(synchttp_queue_data, query_url_len+1, len-2));
+			fprintf(stderr, "post:%s        ", queue_url);
 			curl_easy_setopt(synchttp_curl_handle, CURLOPT_POST, 1);
-			curl_easy_setopt(synchttp_curl_handle, CURLOPT_POSTFIELDS,
-					queue_data);
+			curl_easy_setopt(synchttp_curl_handle, CURLOPT_POSTFIELDS, queue_data);
 		}
+		curl_easy_setopt(synchttp_curl_handle, CURLOPT_URL, queue_url);
 		/*回调设置*/
-		curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION,
-				synchttp_write_callback);
+		curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEFUNCTION, synchttp_write_callback);
 		curl_easy_setopt(synchttp_curl_handle, CURLOPT_WRITEDATA, &chunk);
 		response = curl_easy_perform(synchttp_curl_handle);
 	}
+
 	/*请求响应处理*/
 	if ((response == CURLE_OK) && chunk.responsetext && (strcmp(chunk.responsetext, "SYNCHTTP_SYNC_SUCCESS") == 0)) {
 		fprintf(stderr, "[success]\n");
@@ -223,75 +224,43 @@ static int synchttp_request(const char *synchttp_host, char *synchttp_queue_url,
 		free(chunk.responsetext);
 	}
 	curl_easy_cleanup(synchttp_curl_handle);
-	free(host);
 	free(queue_url);
-	free(queue_method);
 	free(queue_data);
+	free(queue_method);
 }
+
 /*消息分发*/
-static int synchttp_dispense(const char *synchttp_queue_name) {
-	char queue_input_name[300] = { 0x00 };
-	char queue_input_url[300] = { 0x00 };
-	char queue_input_method[300] = { 0x00 };
-
-	int queue_value = 0;
-
+static bool synchttp_dispense(const char *synchttp_queue_name) {
 	char *queue_data;
-	char *queue_url;
-	char *queue_method;
 	char *token;
 	char *sync_listen;
-	sprintf(queue_input_name, "%s:NAME", synchttp_queue_name);
-	sprintf(queue_input_url, "%s:URL", synchttp_queue_name);
-	sprintf(queue_input_method, "%s:METHOD", synchttp_queue_name);
-
-	queue_data = tcbdbget2(synchttp_db_tcbdb, queue_input_name);
-	queue_url = tcbdbget2(synchttp_db_tcbdb, queue_input_url);
-	queue_method = tcbdbget2(synchttp_db_tcbdb, queue_input_method);
-	sync_listen = tccalloc(1, strlen(synchttp_sync_listen)+1);
-	memcpy(sync_listen, synchttp_sync_listen, strlen(synchttp_sync_listen));
+	char queue_name[32] = {0x00};
+	sprintf(queue_name, "%s", synchttp_queue_name);
+	queue_data = tcbdbget2(synchttp_db_tcbdb, queue_name);
 	if (queue_data != NULL) {
-		token = strtok(sync_listen, ":");
-		while(token)
-		{
-			synchttp_request(token, queue_url, queue_method, queue_data);
-			token = strtok(NULL, ",");
-		}
-	} else {
-		return 1;
+		synchttp_request(queue_data);
 	}
+	free(token);
 	free(sync_listen);
 	free(queue_data);
-	free(queue_url);
-	free(queue_method);
-	return 0;
+	return false;
 }
 
 /*实时监听消息队列，并发送处理请求*/
 static void synchttp_dispatch() {
 	pthread_detach(pthread_self());
-	char queue_name[300] = { 0x00 };
+
+	char queue_name[300] = {0x00};
+	int readpos_value = 0;
 
 	while (1) {
-		if (TAILQ_EMPTY(&queue_head) == false) {
-			/*从消息队列头部开始取数据*/
-			struct QUEUE_ITEM *item;
-			if ((item = TAILQ_FIRST(&queue_head)) != NULL) {
-				sprintf(queue_name, "%s", item->queue_name);
-				if (synchttp_dispense(queue_name) == 0) {
-					/*分发成功后赶出消息队列*/
-					synchttp_remove((char *) queue_name);
-					TAILQ_REMOVE(&queue_head, item, entries);
-				} else {
-					/*未分发成功保留在消息队列中*/
-					sleep(1);
-				}
-				item = TAILQ_NEXT(item, entries);
-			} else {
-				sleep(1);
+		readpos_value = synchttp_now_readpos();
+		if(readpos_value >0){
+			sprintf(queue_name, "Q:%d", readpos_value);
+			if(synchttp_dispense(queue_name) == true){
+
 			}
-		} else {
-			sleep(1);
+			tcbdbout2(synchttp_db_tcbdb, queue_name);
 		}
 	}
 }
@@ -343,11 +312,8 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 	evhttp_parse_query(decode_uri, &synchttp_http_query);
 	free(decode_uri);
 
-	char *synchttp_input_name; /*名称*/
-
 	/* 接收GET表单参数 */
 	const char *synchttp_input_charset = evhttp_find_header(&synchttp_http_query, "charset"); /* 编码方式 */
-	const char *synchttp_input_url = evhttp_find_header(&synchttp_http_query, "url"); /* 数据 */
 	const char *synchttp_input_data = evhttp_find_header(&synchttp_http_query, "data"); /* 数据 */
 	const char *synchttp_input_auth = evhttp_find_header(&synchttp_http_query, "auth"); /* 验证密码 */
 
@@ -361,9 +327,10 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 	}
 	evhttp_add_header(req->output_headers, "Connection", "keep-alive");
 	evhttp_add_header(req->output_headers, "Cache-Control", "no-cache");
-	//evhttp_add_header(req->output_headers, "Connection", "close");
 
-	/* 权限校验 */bool is_auth_pass = false; /* 是否验证通过 */
+	/* 权限校验 */
+	bool is_auth_pass = false;
+	/* 是否验证通过 */
 	if (synchttp_settings_auth != NULL) {
 		/* 如果命令行启动参数设置了验证密码 */
 		if (synchttp_input_auth != NULL && strcmp(synchttp_settings_auth, synchttp_input_auth) == 0) {
@@ -378,68 +345,53 @@ void synchttp_handler(struct evhttp_request *req, void *arg) {
 	if (is_auth_pass == false) {
 		/* 校验失败 */
 		evbuffer_add_printf(buf, "%s", "SYNCHTTP_AUTH_FAILED");
-	} else {
-		/*参数是否存在判断 */
-
-		if (synchttp_input_url != NULL && 1 < strlen(synchttp_input_url) <= 250) {
-			int buffer_data_len;
-			char queue_name[300] = { 0x00 }; /* 队列名称的总长度，用户输入的队列长度少于250字节 */
-			char queue_url[300] = { 0x00 };
-			char queue_method[300] = { 0x00 };
-
-			time_t timep;
-			time(&timep);
-			struct timeval tv;
-			gettimeofday(&tv, NULL);
-			synchttp_input_name = tccalloc(1, 300);
-			sprintf(synchttp_input_name, "%ld",
-					mktime(gmtime(&timep)) + tv.tv_usec);
-
-			sprintf(queue_name, "%s:NAME", synchttp_input_name);
-			sprintf(queue_url, "%s:URL", synchttp_input_name);
-			sprintf(queue_method, "%s:METHOD", synchttp_input_name);
-
-			/*请求消息入库*/
-			char *synchttp_input_buffer;
-			char *buffer_data;
-			char *queue_url_temp;
-			if (synchttp_input_data != NULL) {
-				/*GET请求*/
-				tcbdbput2(synchttp_db_tcbdb, queue_method, "get");
-				buffer_data_len = strlen(synchttp_input_data);
-				buffer_data = (char *) tccalloc(1, buffer_data_len + 1);
-				memcpy(buffer_data, synchttp_input_data, buffer_data_len);
-			} else {
-				/*POST请求*/
-				tcbdbput2(synchttp_db_tcbdb, queue_method, "post");
-				buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
-				buffer_data = (char *) tccalloc(1, buffer_data_len + 1);
-				memcpy(buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
-			}
-			synchttp_input_buffer = urldecode(buffer_data);
-
-			evbuffer_add_printf(buf, "%s", "SYNCHTTP_SET_OK");
-
-			tcbdbput2(synchttp_db_tcbdb, queue_name, synchttp_input_buffer);
-			queue_url_temp = (char *) tccalloc(1, strlen(synchttp_input_url) + 1);
-			memcpy(queue_url_temp, synchttp_input_url, strlen(synchttp_input_url));
-			tcbdbput2(synchttp_db_tcbdb, queue_url, queue_url_temp);
-
-			/*索引消息处理*/
-			struct QUEUE_ITEM *item;
-			item = tccalloc(1, sizeof(item));
-			item->queue_name = tccalloc(1, 300);
-			memcpy(item->queue_name, synchttp_input_name, strlen(synchttp_input_name));
-			TAILQ_INSERT_TAIL(&queue_head, item, entries);
-
-			free(synchttp_input_buffer);
-			free(synchttp_input_name);
-			free(buffer_data);
-		} else {
-			/* 参数错误 */
-			evbuffer_add_printf(buf, "%s", "SYNCHTTP_ERROR");
-		}
+		goto output;
 	}
+
+	int now_putpos = synchttp_now_putpos();
+	if(now_putpos > SYNCHTTP_DEFAULT_MAXQUEUE){
+		evbuffer_add_printf(buf, "%s", "SYNCHTTP_PUT_FULL");
+		goto output;
+	}
+
+	int buffer_data_len;
+	char queue_name[32] = { 0x00 };
+	sprintf(queue_name,"Q:%d", now_putpos);
+
+	/*请求消息入库*/
+	char *synchttp_input_buffer;
+	char *buffer_data;
+	if (synchttp_input_data != NULL) {
+		/*GET请求*/
+		buffer_data_len = strlen(synchttp_input_data);
+		buffer_data = (char *) tccalloc(1, buffer_data_len + 3);
+		memcpy(buffer_data, synchttp_input_data, buffer_data_len);
+		strcat(buffer_data, "#1");
+	} else {
+		/*POST请求*/
+		buffer_data_len = EVBUFFER_LENGTH(req->input_buffer);
+		buffer_data = (char *) tccalloc(1, buffer_data_len + 3);
+		memcpy(buffer_data, EVBUFFER_DATA(req->input_buffer), buffer_data_len);
+		strcat(buffer_data, "#2");
+	}
+	synchttp_input_buffer = urldecode(buffer_data);
+	/*参数是否存在判断 */
+	if (strlen(synchttp_input_buffer) < 3){
+		/* 参数错误 */
+		evbuffer_add_printf(buf, "%s", "SYNCHTTP_ERROR");
+		goto output;
+	}
+	if(tcbdbput2(synchttp_db_tcbdb, queue_name, synchttp_input_buffer) == true){
+		fprintf(stderr, "in:%s--->%s\n", queue_name, synchttp_input_buffer);
+	}else{
+		evbuffer_add_printf(buf, "%s", "SYNCHTTP_ERROR");
+		goto output;
+	}
+	evbuffer_add_printf(buf, "%s", "SYNCHTTP_SET_OK");
+	free(synchttp_input_buffer);
+	free(buffer_data);
+
+output:
 	/* 输出内容给客户端 */
 	evhttp_send_reply(req, HTTP_OK, "OK", buf);
 	/* 内存释放 */
@@ -454,7 +406,6 @@ static void show_help(void) {
 				"This is free software, and you are welcome to modify and redistribute it under the New BSD License\n"
 				"\n"
 				"-l <ip_addr>  interface to listen on, default is 0.0.0.0\n"
-				"-w <ip_addr>  interface to dispense out, default is 0.0.0.0\n"
 				"-p <num>      TCP port number to listen on (default: 2688)\n"
 				"-x <path>     database directory (example: /opt/synchttp/data)\n"
 				"-t <second>   keep-alive timeout for an http request (default: 60)\n"
@@ -488,7 +439,6 @@ int main(int argc, char *argv[], char *envp[]) {
 	int synchttp_settings_mappedmemory = 104857600; /* 单位：字节 */
 	synchttp_settings_pidfile = "/tmp/synchttp.pid";
 	synchttp_settings_auth = NULL; /* 验证密码 */
-	synchttp_sync_listen = "0.0.0.0";
 
 	/* 启动选项 */
 	while ((c = getopt(argc, argv, "l:p:x:t:s:c:m:i:a:w:dh")) != -1) {
@@ -531,9 +481,6 @@ int main(int argc, char *argv[], char *envp[]) {
 		case 'a':
 			synchttp_settings_auth = strdup(optarg);
 			break;
-		case 'w':
-			synchttp_sync_listen = strdup(optarg);
-			break;
 		case 'd':
 			synchttp_settings_daemon = true;
 			break;
@@ -547,8 +494,7 @@ int main(int argc, char *argv[], char *envp[]) {
 	/* 判断是否加了必填参数 -x */
 	if (synchttp_settings_datapath == NULL) {
 		show_help();
-		fprintf(stderr,
-				"Attention: Please use the indispensable argument: -x <path>\n\n");
+		fprintf(stderr, "Attention: Please use the indispensable argument: -x <path>\n\n");
 		exit(1);
 	}
 
@@ -655,7 +601,7 @@ int main(int argc, char *argv[], char *envp[]) {
 	/* 处理段错误信号 */
 	signal(SIGSEGV, kill_signal_worker);
 
-	/*创建消息队列监听进程*/TAILQ_INIT(&queue_head);
+	/*创建消息队列监听进程*/
 	pthread_t synchttp_dispatch_tid;
 	pthread_create(&synchttp_dispatch_tid, NULL, (void *) synchttp_dispatch, NULL);
 
