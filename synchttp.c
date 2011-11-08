@@ -45,6 +45,12 @@
 #define SYNCHTTP_DEFAULT_MAXQUEUE 1000000
 #define VERSION 1.0
 
+//http消息结构体
+struct SynhttpResponseStruct {
+	char *responsetext;
+	size_t size;
+};
+
 /* 全局设置 */
 TCBDB *synchttp_db_tcbdb; /* 数据表 */
 int synchttp_settings_syncinterval; /* 同步更新内容到磁盘的间隔时间 */
@@ -152,12 +158,6 @@ static int synchttp_now_readpos()
 	}
 	return readpos_value;
 }
-
-//http消息结构体
-struct SynhttpResponseStruct {
-	char *responsetext;
-	size_t size;
-};
 
 static size_t synchttp_write_callback(void *ptr, size_t size, size_t nmemb, void *data) {
 	size_t realsize = size * nmemb;
