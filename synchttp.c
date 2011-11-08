@@ -153,6 +153,7 @@ static int synchttp_now_readpos()
 	return readpos_value;
 }
 
+//http消息结构体
 struct SynhttpResponseStruct {
 	char *responsetext;
 	size_t size;
@@ -177,7 +178,7 @@ static int synchttp_request(char *synchttp_queue_data) {
 	CURL *synchttp_curl_handle = NULL;
 	CURLcode response;
 	int retval = 1;
-	char *queue_url,*queue_data, *queue_method;
+	char *queue_url, *queue_data, *queue_method;
 
 	struct SynhttpResponseStruct chunk;
 	chunk.responsetext = malloc(1);
@@ -230,9 +231,8 @@ static int synchttp_request(char *synchttp_queue_data) {
 }
 
 /*消息分发*/
-static bool synchttp_dispense(const char *synchttp_queue_name) {
+static void synchttp_dispense(const char *synchttp_queue_name) {
 	char *queue_data;
-	char *token;
 	char *sync_listen;
 	char queue_name[32] = {0x00};
 	sprintf(queue_name, "%s", synchttp_queue_name);
@@ -240,10 +240,8 @@ static bool synchttp_dispense(const char *synchttp_queue_name) {
 	if (queue_data != NULL) {
 		synchttp_request(queue_data);
 	}
-	free(token);
 	free(sync_listen);
 	free(queue_data);
-	return false;
 }
 
 /*实时监听消息队列，并发送处理请求*/
@@ -257,9 +255,7 @@ static void synchttp_dispatch() {
 		readpos_value = synchttp_now_readpos();
 		if(readpos_value >0){
 			sprintf(queue_name, "Q:%d", readpos_value);
-			if(synchttp_dispense(queue_name) == true){
-
-			}
+			synchttp_dispense(queue_name);
 			tcbdbout2(synchttp_db_tcbdb, queue_name);
 		}
 	}
